@@ -1,0 +1,14 @@
+.light-switch {
+  all: unset;
+  cursor: pointer;
+  display: inline-block;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  touch-action: none;
+}
+
+.light-switch:focus-visible {
+  outline: 3px solid #6cabf7;
+  outline-offset: 6px;
+  border-radius: 12px;
+}

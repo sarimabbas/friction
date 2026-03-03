@@ -1,0 +1,58 @@
+:root {
+  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  color: rgba(255, 255, 255, 0.87);
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Dark room background */
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background-color: #1a1816;
+  transition: background-color 0.6s ease;
+}
+
+/* Light cone overlay when room is lit */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse 60% 50% at 50% 30%,
+    rgba(255, 240, 200, 0.06) 0%,
+    transparent 70%
+  );
+  opacity: 0;
+  transition: opacity 0.6s ease;
+}
+
+body.room-lit {
+  background-color: #3d3831;
+}
+
+body.room-lit::after {
+  opacity: 1;
+}
+
+/* Dial page background — cool industrial grey */
+body.dial-page {
+  background-color: #1c1c1e;
+}
+
+body.dial-page::after {
+  background: radial-gradient(
+    ellipse 70% 60% at 50% 40%,
+    rgba(200, 210, 220, 0.04) 0%,
+    transparent 70%
+  );
+  opacity: 1;
+}

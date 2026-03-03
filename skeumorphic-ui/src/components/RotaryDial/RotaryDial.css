@@ -1,0 +1,18 @@
+.rotary-dial {
+  all: unset;
+  cursor: grab;
+  display: inline-block;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  touch-action: none;
+}
+
+.rotary-dial:active {
+  cursor: grabbing;
+}
+
+.rotary-dial:focus-visible {
+  outline: 3px solid #6cabf7;
+  outline-offset: 6px;
+  border-radius: 50%;
+}
