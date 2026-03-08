@@ -5,8 +5,10 @@ import {
 } from "ios-vibrator-pro-max";
 
 type VibratePattern = number | number[];
+const REDIRECT_PREFIX = "https://api.vibrator.dev/redirect#";
 
 let initialized = false;
+let popupOpenPatched = false;
 
 function canVibrate(): boolean {
   return (
@@ -24,8 +26,47 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+function shouldBypassPopupRedirect(): boolean {
+  if (typeof window === "undefined") return false;
+  const host = window.location.hostname;
+  return host !== "localhost" && host !== "127.0.0.1";
+}
+
+function patchPopupRedirectFlow(): void {
+  if (popupOpenPatched || typeof window === "undefined") return;
+
+  const nativeOpen = window.open.bind(window);
+  window.open = ((url?: string | URL, target?: string, features?: string) => {
+    if (!shouldBypassPopupRedirect()) {
+      return nativeOpen(url, target, features);
+    }
+
+    const rawUrl = typeof url === "string" ? url : url?.toString();
+    if (!rawUrl || !rawUrl.startsWith(REDIRECT_PREFIX)) {
+      return nativeOpen(url, target, features);
+    }
+
+    const fallbackTarget = rawUrl.slice(REDIRECT_PREFIX.length);
+    const decodedTarget = (() => {
+      try {
+        return decodeURIComponent(fallbackTarget);
+      } catch {
+        return fallbackTarget;
+      }
+    })();
+
+    // Some deployed hosts fail to return from api.vibrator.dev/redirect.
+    // Open the final app URL directly so the background popup flow can continue.
+    return nativeOpen(decodedTarget, target, features);
+  }) as typeof window.open;
+
+  popupOpenPatched = true;
+}
+
 export function initializeHaptics(): void {
   if (initialized || typeof window === "undefined") return;
+
+  patchPopupRedirectFlow();
 
   // Keep iOS 18.4+ haptics alive beyond the short click-grant window.
   enableBackgroundPopup(true);
