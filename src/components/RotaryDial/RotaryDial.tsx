@@ -16,7 +16,7 @@ export function RotaryDial({
 }: RotaryDialProps) {
   const {
     knobRotationRef,
-    detentIndexRef,
+    detentIndex,
     buttonRef,
     handlePointerDown,
     handlePointerMove,
@@ -34,11 +34,11 @@ export function RotaryDial({
       onPointerCancel={handlePointerUp}
       onKeyDown={handleKeyDown}
       onClick={(e) => e.preventDefault()}
-      aria-label={`Rotary dial, value ${detentIndexRef.current}`}
+      aria-label={`Rotary dial, value ${detentIndex}`}
       role="slider"
       aria-valuemin={0}
       aria-valuemax={detents - 1}
-      aria-valuenow={detentIndexRef.current}
+      aria-valuenow={detentIndex}
     >
       <Canvas
         style={{ width: 340, height: 340, pointerEvents: "none" }}

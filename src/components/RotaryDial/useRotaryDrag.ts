@@ -1,5 +1,13 @@
-import { useCallback, useRef, useEffect } from "react";
+import { useCallback, useRef, useEffect, useState } from "react";
 import type { MutableRefObject, RefObject } from "react";
+import {
+  getDialEndStopPulseInterval,
+  hapticDialEndStopResistance,
+  hapticRotaryDetent,
+  hapticTapLight,
+  hapticTapMedium,
+  stopHaptics,
+} from "../../haptics/engine";
 
 // ── Constants ──
 const DETENT_COUNT_DEFAULT = 11;
@@ -11,97 +19,6 @@ const SPRING_DAMPING = 35;
 const DISP_THRESHOLD = 0.002;
 const VEL_THRESHOLD = 0.006;
 
-// ── Haptic helpers (duplicated from LightSwitch to keep it untouched) ──
-function isIOS(): boolean {
-  if (typeof navigator === "undefined" || typeof window === "undefined")
-    return false;
-  const iOSDevice = /iPad|iPhone|iPod/.test(navigator.userAgent);
-  const iPadOS =
-    navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
-  return iOSDevice || iPadOS;
-}
-
-const HAPTIC_ID = "rotary-haptic-input";
-let hapticInput: HTMLInputElement | null = null;
-let hapticLabel: HTMLLabelElement | null = null;
-
-function ensureHapticDOM() {
-  if (hapticInput && hapticLabel) return;
-
-  hapticInput = document.querySelector<HTMLInputElement>(`#${HAPTIC_ID}`);
-  hapticLabel = document.querySelector<HTMLLabelElement>(
-    `label[for="${HAPTIC_ID}"]`,
-  );
-  if (hapticInput && hapticLabel) return;
-
-  hapticInput = document.createElement("input");
-  hapticInput.type = "checkbox";
-  hapticInput.id = HAPTIC_ID;
-  hapticInput.setAttribute("switch", "");
-  Object.assign(hapticInput.style, {
-    position: "fixed",
-    top: "-100px",
-    left: "-100px",
-    opacity: "0",
-    pointerEvents: "none",
-    width: "0",
-    height: "0",
-  });
-  document.body.appendChild(hapticInput);
-
-  hapticLabel = document.createElement("label");
-  hapticLabel.htmlFor = HAPTIC_ID;
-  Object.assign(hapticLabel.style, {
-    position: "fixed",
-    top: "-100px",
-    left: "-100px",
-    opacity: "0",
-    pointerEvents: "none",
-    width: "0",
-    height: "0",
-  });
-  document.body.appendChild(hapticLabel);
-}
-
-function hapticTick() {
-  if (isIOS()) {
-    ensureHapticDOM();
-    hapticLabel?.click();
-  } else if (navigator?.vibrate) {
-    navigator.vibrate(8);
-  }
-}
-
-// ── Audio: crisp detent click ──
-let audioCtx: AudioContext | null = null;
-
-function ensureAudioContext() {
-  if (audioCtx) return;
-  audioCtx = new AudioContext();
-}
-
-function fireDetentClick() {
-  if (!audioCtx) return;
-  if (audioCtx.state === "suspended") audioCtx.resume();
-
-  const now = audioCtx.currentTime;
-  const osc = audioCtx.createOscillator();
-  const gain = audioCtx.createGain();
-
-  osc.type = "sine";
-  osc.frequency.setValueAtTime(2000, now);
-  osc.frequency.exponentialRampToValueAtTime(1200, now + 0.03);
-
-  gain.gain.setValueAtTime(0.18, now);
-  gain.gain.exponentialRampToValueAtTime(0.001, now + 0.04);
-
-  osc.connect(gain);
-  gain.connect(audioCtx.destination);
-  osc.start(now);
-  osc.stop(now + 0.04);
-}
-
-// ── Types ──
 interface DragState {
   isDragging: boolean;
   grabPointerAngle: number; // atan2 angle at pointer down (fixed for entire drag)
@@ -110,6 +27,11 @@ interface DragState {
   cumulativeDelta: number; // total angular movement since grab
   lastDetentIndex: number;
   isTouchDrag: boolean;
+  lastEndStopPulseAt: number;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 interface SpringState {
@@ -129,6 +51,7 @@ interface UseRotaryDragOptions {
 interface UseRotaryDragReturn {
   knobRotationRef: MutableRefObject<number>;
   detentIndexRef: MutableRefObject<number>;
+  detentIndex: number;
   buttonRef: RefObject<HTMLButtonElement | null>;
   handlePointerDown: (e: React.PointerEvent) => void;
   handlePointerMove: (e: React.PointerEvent) => void;
@@ -146,13 +69,8 @@ export function useRotaryDrag({
 
   const knobRotationRef = useRef(initialAngle);
   const detentIndexRef = useRef(defaultIndex);
+  const [detentIndex, setDetentIndex] = useState(defaultIndex);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
-  const iosRef = useRef(false);
-
-  useEffect(() => {
-    iosRef.current = isIOS();
-    ensureHapticDOM();
-  }, []);
 
   const dragRef = useRef<DragState>({
     isDragging: false,
@@ -162,6 +80,7 @@ export function useRotaryDrag({
     cumulativeDelta: 0,
     lastDetentIndex: defaultIndex,
     isTouchDrag: false,
+    lastEndStopPulseAt: 0,
   });
 
   const springRef = useRef<SpringState>({
@@ -177,7 +96,6 @@ export function useRotaryDrag({
     springRef.current.angle = angle;
   }, []);
 
-  // ── Spring animation ──
   const animateSpring = useCallback(
     (target: number) => {
       const spring = springRef.current;
@@ -213,7 +131,6 @@ export function useRotaryDrag({
     [applyAngle],
   );
 
-  // Get pointer angle relative to button center
   const getPointerAngle = useCallback(
     (clientX: number, clientY: number): number => {
       const el = buttonRef.current;
@@ -226,7 +143,15 @@ export function useRotaryDrag({
     [],
   );
 
-  // ── Shared drag logic ──
+  const commitDetentIndex = useCallback(
+    (index: number) => {
+      detentIndexRef.current = index;
+      setDetentIndex(index);
+      onChange?.(index);
+    },
+    [onChange],
+  );
+
   const dragStart = useCallback(
     (clientX: number, clientY: number) => {
       cancelAnimationFrame(springRef.current.rafId);
@@ -240,9 +165,9 @@ export function useRotaryDrag({
       drag.lastPointerAngle = pointerAngle;
       drag.cumulativeDelta = 0;
       drag.lastDetentIndex = detentIndexRef.current;
+      drag.lastEndStopPulseAt = 0;
 
-      hapticTick();
-      ensureAudioContext();
+      hapticTapLight();
     },
     [getPointerAngle],
   );
@@ -254,7 +179,6 @@ export function useRotaryDrag({
 
       const currentPointerAngle = getPointerAngle(clientX, clientY);
 
-      // Compute frame-to-frame delta (handles ±PI wrapping correctly)
       let frameDelta = currentPointerAngle - drag.lastPointerAngle;
       while (frameDelta > Math.PI) frameDelta -= 2 * Math.PI;
       while (frameDelta < -Math.PI) frameDelta += 2 * Math.PI;
@@ -262,31 +186,34 @@ export function useRotaryDrag({
       drag.cumulativeDelta += frameDelta;
       drag.lastPointerAngle = currentPointerAngle;
 
-      // Apply cumulative delta from the fixed grab point
-      let newAngle = drag.knobAngleAtGrab + drag.cumulativeDelta;
+      const unclampedAngle = drag.knobAngleAtGrab + drag.cumulativeDelta;
+      const newAngle = clamp(unclampedAngle, 0, TOTAL_ROTATION);
 
-      // Clamp to [0, TOTAL_ROTATION]
-      newAngle = Math.max(0, Math.min(TOTAL_ROTATION, newAngle));
-
-      // Check detent crossing
       const newDetentIndex = Math.round(newAngle / detentAngle);
       const clampedDetent = Math.max(0, Math.min(detents - 1, newDetentIndex));
 
       if (clampedDetent !== drag.lastDetentIndex) {
         drag.lastDetentIndex = clampedDetent;
-        detentIndexRef.current = clampedDetent;
-        onChange?.(clampedDetent);
+        commitDetentIndex(clampedDetent);
+        hapticRotaryDetent();
+      }
 
-        // Detent feedback
-        fireDetentClick();
-        if (!iosRef.current && navigator?.vibrate) {
-          navigator.vibrate(8);
+      const overflow = Math.abs(unclampedAngle - newAngle);
+      if (overflow > 0.001) {
+        const pressure = clamp(overflow / (Math.PI / 7), 0, 1);
+        const now = performance.now();
+        const interval = getDialEndStopPulseInterval(pressure);
+        if (now - drag.lastEndStopPulseAt >= interval) {
+          hapticDialEndStopResistance(pressure, unclampedAngle > TOTAL_ROTATION);
+          drag.lastEndStopPulseAt = now;
         }
+      } else {
+        drag.lastEndStopPulseAt = 0;
       }
 
       applyAngle(newAngle);
     },
-    [getPointerAngle, detentAngle, detents, onChange, applyAngle],
+    [getPointerAngle, detentAngle, detents, commitDetentIndex, applyAngle],
   );
 
   const dragEnd = useCallback(() => {
@@ -294,23 +221,20 @@ export function useRotaryDrag({
     if (!drag.isDragging) return;
     drag.isDragging = false;
 
-    hapticTick();
-    fireDetentClick();
+    stopHaptics();
+    hapticTapMedium();
 
-    // Snap to nearest detent
     const currentAngle = knobRotationRef.current;
     const nearestIndex = Math.round(currentAngle / detentAngle);
     const clampedIndex = Math.max(0, Math.min(detents - 1, nearestIndex));
     const targetAngle = clampedIndex * detentAngle;
 
-    detentIndexRef.current = clampedIndex;
-    onChange?.(clampedIndex);
+    commitDetentIndex(clampedIndex);
 
     springRef.current.velocity = 0;
     animateSpring(targetAngle);
-  }, [detentAngle, detents, onChange, animateSpring]);
+  }, [detentAngle, detents, commitDetentIndex, animateSpring]);
 
-  // ── Touch event handlers ──
   useEffect(() => {
     const el = buttonRef.current;
     if (!el) return;
@@ -349,10 +273,10 @@ export function useRotaryDrag({
       el.removeEventListener("touchmove", onTouchMove);
       el.removeEventListener("touchend", onTouchEnd);
       el.removeEventListener("touchcancel", onTouchEnd);
+      stopHaptics();
     };
   }, [dragStart, dragMove, dragEnd]);
 
-  // ── Pointer event handlers (mouse / non-touch) ──
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
       if (dragRef.current.isTouchDrag) return;
@@ -384,7 +308,6 @@ export function useRotaryDrag({
     [dragEnd],
   );
 
-  // ── Keyboard ──
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       let newIndex = detentIndexRef.current;
@@ -401,22 +324,21 @@ export function useRotaryDrag({
 
       if (newIndex === detentIndexRef.current) return;
 
-      detentIndexRef.current = newIndex;
-      onChange?.(newIndex);
+      commitDetentIndex(newIndex);
 
-      hapticTick();
-      fireDetentClick();
+      hapticRotaryDetent();
 
       cancelAnimationFrame(springRef.current.rafId);
       springRef.current.velocity = 0;
       animateSpring(newIndex * detentAngle);
     },
-    [detents, onChange, animateSpring, detentAngle],
+    [detents, commitDetentIndex, animateSpring, detentAngle],
   );
 
   return {
     knobRotationRef,
     detentIndexRef,
+    detentIndex,
     buttonRef,
     handlePointerDown,
     handlePointerMove,

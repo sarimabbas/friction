@@ -15,18 +15,29 @@ function App() {
   }, [isOn, activePage]);
 
   return (
-    <Carousel onPageChange={setActivePage}>
-      <div className="page page--switch">
-        <LightSwitch defaultOn={false} onChange={setIsOn} />
-        <span className={`switch-label ${isOn ? "switch-label--on" : ""}`}>
-          {isOn ? "ON" : "OFF"}
-        </span>
-      </div>
-      <div className="page page--dial">
-        <RotaryDial detents={11} defaultIndex={0} onChange={setDialValue} />
-        <span className="dial-label">{dialValue}</span>
-      </div>
-    </Carousel>
+    <>
+      <a
+        className="repo-link"
+        href="https://github.com/sarimabbas/friction"
+        target="_blank"
+        rel="noreferrer"
+        aria-label="View source on GitHub"
+      >
+        github
+      </a>
+      <Carousel onPageChange={setActivePage}>
+        <div className="page page--switch">
+          <LightSwitch defaultOn={false} onChange={setIsOn} />
+          <span className={`switch-label ${isOn ? "switch-label--on" : ""}`}>
+            {isOn ? "ON" : "OFF"}
+          </span>
+        </div>
+        <div className="page page--dial">
+          <RotaryDial detents={11} defaultIndex={0} onChange={setDialValue} />
+          <span className="dial-label">{dialValue}</span>
+        </div>
+      </Carousel>
+    </>
   );
 }
 

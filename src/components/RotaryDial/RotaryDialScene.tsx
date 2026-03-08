@@ -19,8 +19,9 @@ function ScaleMarks({ detents }: { detents: number }) {
       angle: number;
       isMajor: boolean;
     }[] = [];
-    const startAngle = -135 * (Math.PI / 180);
-    const sweep = 270 * (Math.PI / 180);
+    // Align the visual dead-zone with the dial's hard-stop dead-zone.
+    const startAngle = (Math.PI / 2) * 3;
+    const sweep = -270 * (Math.PI / 180);
     const radius = 1.15;
 
     for (let i = 0; i < detents; i++) {
@@ -64,9 +65,7 @@ function ScaleMarks({ detents }: { detents: number }) {
               0.003,
             ]}
           />
-          <meshBasicMaterial
-            color={tick.isMajor ? "#cccccc" : "#666666"}
-          />
+          <meshBasicMaterial color={tick.isMajor ? "#cccccc" : "#666666"} />
         </mesh>
       ))}
     </group>
@@ -138,7 +137,11 @@ export function RotaryDialScene({
       <directionalLight position={[-4, 5, -2]} intensity={0.15} />
 
       {/* Environment — low intensity for subtle reflections only */}
-      <Environment preset="studio" background={false} environmentIntensity={0.3} />
+      <Environment
+        preset="studio"
+        background={false}
+        environmentIntensity={0.3}
+      />
 
       {/* ═══ FACEPLATE ═══ */}
       <mesh position={[0, 0.1, 0]}>

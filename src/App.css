@@ -4,6 +4,27 @@
   overflow: hidden;
 }
 
+.repo-link {
+  position: fixed;
+  right: 14px;
+  bottom: 10px;
+  z-index: 20;
+  font-family: system-ui, sans-serif;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.28);
+  text-decoration: none;
+  transition: color 0.2s ease, opacity 0.2s ease;
+  opacity: 0.7;
+}
+
+.repo-link:hover,
+.repo-link:focus-visible {
+  color: rgba(255, 255, 255, 0.58);
+  opacity: 1;
+}
+
 .page {
   display: flex;
   flex-direction: column;

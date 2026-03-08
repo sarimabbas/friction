@@ -11,7 +11,7 @@ interface LightSwitchProps {
 export function LightSwitch({ defaultOn = false, onChange }: LightSwitchProps) {
   const {
     leverRotationRef,
-    isOnRef,
+    isOn,
     buttonRef,
     handlePointerDown,
     handlePointerMove,
@@ -29,7 +29,7 @@ export function LightSwitch({ defaultOn = false, onChange }: LightSwitchProps) {
       onPointerCancel={handlePointerUp}
       onKeyDown={handleKeyDown}
       onClick={(e) => e.preventDefault()}
-      aria-pressed={isOnRef.current}
+      aria-pressed={isOn}
       aria-label="Light switch"
     >
       <Canvas

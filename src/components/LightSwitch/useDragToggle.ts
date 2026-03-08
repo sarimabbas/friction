@@ -1,6 +1,14 @@
-import { useCallback, useRef, useEffect } from "react";
-import { useWebHaptics } from "web-haptics/react";
+import { useCallback, useRef, useEffect, useState } from "react";
 import type { MutableRefObject, RefObject } from "react";
+import {
+  getSwitchDragPulseInterval,
+  hapticDetentSnap,
+  hapticSwitchDragFriction,
+  hapticTapHeavy,
+  hapticTapLight,
+  hapticTapMedium,
+  stopHaptics,
+} from "../../haptics/engine";
 
 // All angles in radians
 const ON_ANGLE = -Math.PI / 10; // ≈ -18°
@@ -9,8 +17,7 @@ const DETENT_ANGLE = 0;
 const OVERSHOOT = 0.052; // ≈ 3°
 
 // More pixels required = more resistance
-const DRAG_DISTANCE_ON = 150;
-const DRAG_DISTANCE_OFF = 90;
+const DRAG_DISTANCE_TOGGLE = 120;
 
 // Spring constants
 const SPRING_STIFFNESS = 600;
@@ -22,155 +29,6 @@ const VEL_THRESHOLD = 0.009;
 
 export { ON_ANGLE, OFF_ANGLE };
 
-// ── Direct haptic helpers ──
-// On iOS, navigator.vibrate doesn't exist.  The only web haptic is toggling a
-// hidden <input type="checkbox" switch> via its <label>.  This only works from
-// user-activation events (touchstart, touchend, click, keydown) — NOT from
-// touchmove, timers, or rAF.  So on iOS we fire discrete haptics at touch
-// down and touch up only.  Android gets continuous vibration via navigator.vibrate.
-
-function isIOS(): boolean {
-  if (typeof navigator === "undefined" || typeof window === "undefined")
-    return false;
-  const iOSDevice = /iPad|iPhone|iPod/.test(navigator.userAgent);
-  const iPadOS =
-    navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
-  return iOSDevice || iPadOS;
-}
-
-const HAPTIC_ID = "drag-haptic-input";
-let hapticInput: HTMLInputElement | null = null;
-let hapticLabel: HTMLLabelElement | null = null;
-
-function ensureHapticDOM() {
-  if (hapticInput && hapticLabel) return;
-
-  hapticInput = document.querySelector<HTMLInputElement>(`#${HAPTIC_ID}`);
-  hapticLabel = document.querySelector<HTMLLabelElement>(
-    `label[for="${HAPTIC_ID}"]`,
-  );
-  if (hapticInput && hapticLabel) return;
-
-  hapticInput = document.createElement("input");
-  hapticInput.type = "checkbox";
-  hapticInput.id = HAPTIC_ID;
-  hapticInput.setAttribute("switch", "");
-  Object.assign(hapticInput.style, {
-    position: "fixed",
-    top: "-100px",
-    left: "-100px",
-    opacity: "0",
-    pointerEvents: "none",
-    width: "0",
-    height: "0",
-  });
-  document.body.appendChild(hapticInput);
-
-  hapticLabel = document.createElement("label");
-  hapticLabel.htmlFor = HAPTIC_ID;
-  Object.assign(hapticLabel.style, {
-    position: "fixed",
-    top: "-100px",
-    left: "-100px",
-    opacity: "0",
-    pointerEvents: "none",
-    width: "0",
-    height: "0",
-  });
-  document.body.appendChild(hapticLabel);
-}
-
-/** Fire one haptic tick.  Must be called from a user-activation context on iOS. */
-function hapticTick() {
-  if (isIOS()) {
-    ensureHapticDOM();
-    hapticLabel?.click();
-  } else if (navigator?.vibrate) {
-    navigator.vibrate(15);
-  }
-}
-
-// ── Web Audio haptic substitute for iOS drag ──
-// iOS Safari doesn't support navigator.vibrate, and the checkbox-switch trick
-// only works from user-activation events — NOT touchmove.  So during a drag we
-// play a very low-frequency oscillator (~30 Hz) through the speaker.  The
-// speaker cone physically vibrates at sub-bass frequencies, creating a subtle
-// tactile sensation through the phone body.
-
-let audioCtx: AudioContext | null = null;
-let oscillator: OscillatorNode | null = null;
-let gainNode: GainNode | null = null;
-
-function ensureAudioContext() {
-  if (audioCtx) return;
-  audioCtx = new AudioContext();
-  gainNode = audioCtx.createGain();
-  gainNode.gain.value = 0;
-  gainNode.connect(audioCtx.destination);
-}
-
-function startDragAudio(turningOn?: boolean) {
-  if (!audioCtx || !gainNode) return;
-  if (audioCtx.state === "suspended") audioCtx.resume();
-  stopDragAudio(); // clean up any previous
-  oscillator = audioCtx.createOscillator();
-  oscillator.type = "sine";
-  // Direction-aware base frequency: upflip is grittier, downflip is gentler
-  const baseFreq = turningOn === true ? 45 : turningOn === false ? 25 : 30;
-  oscillator.frequency.value = baseFreq;
-  oscillator.connect(gainNode);
-  gainNode.gain.setValueAtTime(0.15, audioCtx.currentTime);
-  oscillator.start();
-}
-
-function modulateDragAudio(currentAngle: number, turningOn: boolean) {
-  if (!gainNode || !oscillator || !audioCtx) return;
-  const now = audioCtx.currentTime;
-  // 0 at center (detent), 1 at endpoints
-  const absPos = Math.abs(currentAngle / OFF_ANGLE);
-
-  if (turningOn) {
-    // Upflip: higher freq range (35–55 Hz), more present gain (0.10–0.22)
-    oscillator.frequency.setTargetAtTime(35 + 20 * (1 - absPos), now, 0.04);
-    gainNode.gain.setTargetAtTime(0.10 + 0.12 * (1 - absPos), now, 0.04);
-  } else {
-    // Downflip: lower freq range (20–30 Hz), gentler gain (0.08–0.18)
-    oscillator.frequency.setTargetAtTime(20 + 10 * (1 - absPos), now, 0.04);
-    gainNode.gain.setTargetAtTime(0.08 + 0.10 * (1 - absPos), now, 0.04);
-  }
-}
-
-function fireAudioDetentSnap(turningOn: boolean) {
-  if (!gainNode || !oscillator || !audioCtx) return;
-  const now = audioCtx.currentTime;
-  if (turningOn) {
-    // Upflip snap: sharper "click over the hump"
-    oscillator.frequency.setValueAtTime(100, now);
-    gainNode.gain.setValueAtTime(0.28, now);
-    oscillator.frequency.setTargetAtTime(45, now + 0.03, 0.02);
-    gainNode.gain.setTargetAtTime(0.15, now + 0.03, 0.02);
-  } else {
-    // Downflip snap: softer "settling into place"
-    oscillator.frequency.setValueAtTime(60, now);
-    gainNode.gain.setValueAtTime(0.22, now);
-    oscillator.frequency.setTargetAtTime(25, now + 0.03, 0.02);
-    gainNode.gain.setTargetAtTime(0.15, now + 0.03, 0.02);
-  }
-}
-
-function stopDragAudio() {
-  if (oscillator) {
-    oscillator.stop();
-    oscillator.disconnect();
-    oscillator = null;
-  }
-  if (gainNode) {
-    gainNode.gain.value = 0;
-  }
-}
-
-// ── Types ──
-
 interface DragState {
   isDragging: boolean;
   startY: number;
@@ -179,6 +37,7 @@ interface DragState {
   lastY: number;
   crossedDetent: boolean;
   isTouchDrag: boolean;
+  lastFrictionPulseAt: number;
 }
 
 interface SpringState {
@@ -197,6 +56,7 @@ interface UseDragToggleOptions {
 interface UseDragToggleReturn {
   leverRotationRef: MutableRefObject<number>;
   isOnRef: MutableRefObject<boolean>;
+  isOn: boolean;
   buttonRef: RefObject<HTMLButtonElement | null>;
   handlePointerDown: (e: React.PointerEvent) => void;
   handlePointerMove: (e: React.PointerEvent) => void;
@@ -204,23 +64,38 @@ interface UseDragToggleReturn {
   handleKeyDown: (e: React.KeyboardEvent) => void;
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function getToggleProgress(startAngle: number, currentAngle: number) {
+  const targetAngle = startAngle >= DETENT_ANGLE ? ON_ANGLE : OFF_ANGLE;
+  const totalTravel = Math.abs(targetAngle - startAngle);
+  if (totalTravel < 0.0001) return 1;
+  const travelled = Math.abs(currentAngle - startAngle);
+  return clamp(travelled / totalTravel, 0, 1);
+}
+
+function mapSwitchTravelProgress(rawProgress: number): number {
+  // Build resistance into the approach to detent, then release after crossing.
+  const breakpoint = 0.58;
+  if (rawProgress <= breakpoint) {
+    return 0.5 * Math.pow(rawProgress / breakpoint, 1.9);
+  }
+  const tail = (rawProgress - breakpoint) / (1 - breakpoint);
+  return 0.5 + 0.5 * Math.pow(tail, 0.55);
+}
+
 export function useDragToggle({
   defaultOn,
   onChange,
 }: UseDragToggleOptions): UseDragToggleReturn {
-  const { trigger } = useWebHaptics();
-
   const initialAngle = defaultOn ? ON_ANGLE : OFF_ANGLE;
 
   const leverRotationRef = useRef(initialAngle);
   const isOnRef = useRef(defaultOn);
-  const iosRef = useRef(false);
+  const [isOn, setIsOn] = useState(defaultOn);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
-
-  useEffect(() => {
-    iosRef.current = isIOS();
-    ensureHapticDOM();
-  }, []);
 
   const dragRef = useRef<DragState>({
     isDragging: false,
@@ -230,6 +105,7 @@ export function useDragToggle({
     lastY: 0,
     crossedDetent: false,
     isTouchDrag: false,
+    lastFrictionPulseAt: 0,
   });
 
   const springRef = useRef<SpringState>({
@@ -246,7 +122,6 @@ export function useDragToggle({
     springRef.current.angle = angle;
   }, []);
 
-  // ── Spring animation ──
   const animateSpring = useCallback(
     (target: number) => {
       const spring = springRef.current;
@@ -281,7 +156,15 @@ export function useDragToggle({
     [applyAngle],
   );
 
-  // ── Shared drag logic ──
+  const commitIsOn = useCallback(
+    (next: boolean) => {
+      isOnRef.current = next;
+      setIsOn(next);
+      onChange?.(next);
+    },
+    [onChange],
+  );
+
   const dragStart = useCallback((clientY: number) => {
     cancelAnimationFrame(springRef.current.rafId);
     springRef.current.isAnimating = false;
@@ -292,17 +175,9 @@ export function useDragToggle({
     drag.startAngle = drag.currentAngle;
     drag.lastY = clientY;
     drag.crossedDetent = false;
+    drag.lastFrictionPulseAt = 0;
 
-    // Pickup haptic — called from touchstart/pointerdown (user activation ✓)
-    hapticTick();
-
-    // iOS: start sub-bass oscillator for tactile drag feedback
-    // Infer likely direction from starting position
-    if (iosRef.current) {
-      ensureAudioContext(); // safe — we're in touchstart (user activation ✓)
-      const likelyTurningOn = drag.startAngle >= DETENT_ANGLE;
-      startDragAudio(likelyTurningOn);
-    }
+    hapticTapLight();
   }, []);
 
   const dragMove = useCallback(
@@ -313,78 +188,54 @@ export function useDragToggle({
       const deltaY = clientY - drag.startY;
       const movingUp = deltaY < 0;
       const absDelta = Math.abs(deltaY);
-
-      const turningOn =
+      const turningOn = drag.startAngle >= DETENT_ANGLE;
+      const movingTowardOppositeState =
         (drag.startAngle >= DETENT_ANGLE && movingUp) ||
-        (drag.startAngle < DETENT_ANGLE && movingUp);
+        (drag.startAngle < DETENT_ANGLE && !movingUp);
 
-      const maxDrag = turningOn ? DRAG_DISTANCE_ON : DRAG_DISTANCE_OFF;
+      const maxDrag = DRAG_DISTANCE_TOGGLE;
       const rawProgress = Math.min(absDelta / maxDrag, 1);
 
-      // Non-linear resistance curve
-      let mapped: number;
-      if (rawProgress < 0.5) {
-        mapped = 0.5 * Math.pow(rawProgress / 0.5, 1.5);
-      } else {
-        mapped = 0.5 + 0.5 * Math.pow((rawProgress - 0.5) / 0.5, 0.65);
-      }
-
-      // Compute new angle
       let newAngle: number;
-      if (drag.startAngle >= DETENT_ANGLE) {
-        if (movingUp) {
+      if (movingTowardOppositeState) {
+        const mapped = mapSwitchTravelProgress(rawProgress);
+        if (drag.startAngle >= DETENT_ANGLE) {
           newAngle = drag.startAngle + mapped * (ON_ANGLE - OFF_ANGLE);
         } else {
-          newAngle =
-            drag.startAngle + Math.min(rawProgress * OVERSHOOT, OVERSHOOT);
-        }
-      } else {
-        if (!movingUp) {
           newAngle = drag.startAngle + mapped * (OFF_ANGLE - ON_ANGLE);
-        } else {
-          newAngle =
-            drag.startAngle - Math.min(rawProgress * OVERSHOOT, OVERSHOOT);
         }
+      } else if (drag.startAngle >= DETENT_ANGLE) {
+        newAngle = drag.startAngle + Math.min(rawProgress * OVERSHOOT, OVERSHOOT);
+      } else {
+        newAngle = drag.startAngle - Math.min(rawProgress * OVERSHOOT, OVERSHOOT);
       }
 
-      newAngle = Math.max(
-        ON_ANGLE - OVERSHOOT,
-        Math.min(OFF_ANGLE + OVERSHOOT, newAngle),
-      );
+      newAngle = clamp(newAngle, ON_ANGLE - OVERSHOOT, OFF_ANGLE + OVERSHOOT);
 
-      // Detect detent crossing — record it, but don't fire haptic here
-      // (touchmove has no user activation on iOS).  Android gets vibrate.
       const oldAngle = drag.currentAngle;
       if (
         (oldAngle > DETENT_ANGLE && newAngle <= DETENT_ANGLE) ||
         (oldAngle < DETENT_ANGLE && newAngle >= DETENT_ANGLE)
       ) {
         drag.crossedDetent = true;
-
-        if (iosRef.current) {
-          // iOS: audio "thud" for detent snap (touchmove — no user activation)
-          fireAudioDetentSnap(turningOn);
-        } else {
-          // Android: fire a sharp detent snap during drag
-          trigger([
-            { duration: 25, intensity: 1.0 },
-            { delay: 35, duration: 15, intensity: 0.6 },
-          ]);
-        }
+        hapticDetentSnap(turningOn);
       }
 
-      if (iosRef.current) {
-        // iOS: modulate sub-bass frequency + gain based on lever position and direction
-        modulateDragAudio(newAngle, turningOn);
-      } else if (navigator?.vibrate) {
-        // Android: continuous vibration during drag
-        navigator.vibrate(1000);
+      const dragProgress = getToggleProgress(drag.startAngle, newAngle);
+      const now = performance.now();
+      const pulseInterval = getSwitchDragPulseInterval(
+        dragProgress,
+        drag.crossedDetent,
+      );
+      if (now - drag.lastFrictionPulseAt >= pulseInterval) {
+        hapticSwitchDragFriction(dragProgress, drag.crossedDetent);
+        drag.lastFrictionPulseAt = now;
       }
 
       drag.lastY = clientY;
       applyAngle(newAngle);
     },
-    [applyAngle, trigger],
+    [applyAngle],
   );
 
   const dragEnd = useCallback(
@@ -393,52 +244,37 @@ export function useDragToggle({
       if (!drag.isDragging) return;
       drag.isDragging = false;
 
-      // Stop drag feedback
-      if (iosRef.current) {
-        stopDragAudio();
-      } else if (navigator?.vibrate) {
-        navigator.vibrate(0);
-      }
+      stopHaptics();
 
       const totalMove = Math.abs(clientY - drag.startY);
 
-      // Short tap → toggle
       if (totalMove < 5) {
-        const next = !isOnRef.current;
-        isOnRef.current = next;
-        onChange?.(next);
-        // touchend IS a user activation — haptic works on iOS here
-        hapticTick();
+        hapticTapLight();
         springRef.current.velocity = 0;
-        animateSpring(next ? ON_ANGLE : OFF_ANGLE);
+        animateSpring(isOnRef.current ? ON_ANGLE : OFF_ANGLE);
         return;
       }
 
-      // Determine if the lever crossed the detent
       const crossedDetent =
         (drag.startAngle >= DETENT_ANGLE && drag.currentAngle < DETENT_ANGLE) ||
         (drag.startAngle < DETENT_ANGLE && drag.currentAngle >= DETENT_ANGLE);
 
       if (crossedDetent) {
         const newIsOn = drag.currentAngle < DETENT_ANGLE;
-        isOnRef.current = newIsOn;
-        onChange?.(newIsOn);
-        // Snap haptic — touchend is user activation ✓
-        hapticTick();
+        commitIsOn(newIsOn);
+        hapticTapHeavy();
         springRef.current.velocity = 0;
         animateSpring(newIsOn ? ON_ANGLE : OFF_ANGLE);
       } else {
-        // Spring back, no state change — lighter haptic
-        hapticTick();
+        hapticTapLight();
         const target = drag.startAngle >= DETENT_ANGLE ? OFF_ANGLE : ON_ANGLE;
         springRef.current.velocity = 0;
         animateSpring(target);
       }
     },
-    [onChange, animateSpring],
+    [commitIsOn, animateSpring],
   );
 
-  // ── Touch event handlers ──
   useEffect(() => {
     const el = buttonRef.current;
     if (!el) return;
@@ -477,10 +313,10 @@ export function useDragToggle({
       el.removeEventListener("touchmove", onTouchMove);
       el.removeEventListener("touchend", onTouchEnd);
       el.removeEventListener("touchcancel", onTouchEnd);
+      stopHaptics();
     };
   }, [dragStart, dragMove, dragEnd]);
 
-  // ── Pointer event handlers (mouse / non-touch) ──
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
       if (dragRef.current.isTouchDrag) return;
@@ -512,28 +348,26 @@ export function useDragToggle({
     [dragEnd],
   );
 
-  // ── Keyboard ──
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (e.key !== "Enter" && e.key !== " ") return;
       e.preventDefault();
       const next = !isOnRef.current;
-      isOnRef.current = next;
-      onChange?.(next);
+      commitIsOn(next);
 
-      // keydown IS user activation — works on iOS
-      hapticTick();
+      hapticTapMedium();
 
       cancelAnimationFrame(springRef.current.rafId);
       springRef.current.velocity = 0;
       animateSpring(next ? ON_ANGLE : OFF_ANGLE);
     },
-    [onChange, animateSpring],
+    [commitIsOn, animateSpring],
   );
 
   return {
     leverRotationRef,
     isOnRef,
+    isOn,
     buttonRef,
     handlePointerDown,
     handlePointerMove,
