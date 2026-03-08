@@ -66,25 +66,9 @@ function patchPopupRedirectFlow(): void {
       )
       .join(",");
 
-    // Keep the original cross-origin hop (helps Safari split tabs to different threads),
-    // then force-return to the app URL if api.vibrator.dev redirect gets stuck.
-    const popup = nativeOpen(rawUrl, target, sanitizedFeatures || undefined);
-
-    if (!popup) {
-      return nativeOpen(decodedTarget, target, sanitizedFeatures || undefined);
-    }
-
-    window.setTimeout(() => {
-      try {
-        if (!popup.closed) {
-          popup.location.replace(decodedTarget);
-        }
-      } catch {
-        // Cross-origin access can throw; ignore and rely on native redirect.
-      }
-    }, 800);
-
-    return popup;
+    // The hosted redirect can stall on some domains. Open the final app URL
+    // directly in the popup tab and skip api.vibrator.dev/redirect entirely.
+    return nativeOpen(decodedTarget, target, sanitizedFeatures || undefined);
   }) as typeof window.open;
 
   popupOpenPatched = true;
